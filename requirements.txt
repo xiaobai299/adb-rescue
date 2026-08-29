@@ -1,0 +1,7 @@
+# 运行依赖
+# Pillow：投屏画面解码与缩放（必需）
+Pillow>=9.0
+
+# 外部工具（非 Python 依赖，但必须存在其一）
+#   1) ADB（Android SDK platform-tools）——必需
+#   2) scrcpy ——可选，用于启动高帧率独立投屏窗口
