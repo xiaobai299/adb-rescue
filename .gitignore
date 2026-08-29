@@ -1,0 +1,25 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# ===== 构建产物（不入库） =====
+build/
+dist/
+*.spec
+
+# ===== 测试临时文件 =====
+.smoke/tmp/
+.smoke/config/
+
+# ===== 二进制工具（adb/scrcpy，随 Releases 发布，不放进 git） =====
+tools/
+
+# ===== 本机/系统 =====
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
