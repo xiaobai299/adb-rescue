@@ -40,6 +40,11 @@ def style_root(root: tk.Tk) -> None:
     except tk.TclError:
         pass
     root.configure(background=COLOR["bg"])
+    # 高 DPI 屏（125%/150% 缩放）：按系统缩放像素类尺寸，避免控件偏小
+    try:
+        dpi_scale = max(1.0, root.winfo_fpixels("1i") / 96.0)
+    except tk.TclError:
+        dpi_scale = 1.0
     style.configure(".", background=COLOR["bg"], foreground=COLOR["text"],
                     font=(FONT, 10))
     style.configure("TFrame", background=COLOR["bg"])
@@ -55,9 +60,9 @@ def style_root(root: tk.Tk) -> None:
     style.map("Danger.TButton", background=[("active", "#A81F3C")])
     style.configure("TNotebook", background=COLOR["bg"])
     style.configure("TNotebook.Tab", padding=(14, 6), font=(FONT, 10))
-    style.configure("Treeview", rowheight=24, font=(FONT, 10))
+    style.configure("Treeview", rowheight=int(24 * dpi_scale), font=(FONT, 10))
     style.configure("Treeview.Heading", font=(FONT, 10, "bold"))
-    style.configure("TProgressbar", thickness=16)
+    style.configure("TProgressbar", thickness=int(16 * dpi_scale))
     style.configure("Horizontal.TProgressbar", background=COLOR["primary"])
 
 
@@ -285,12 +290,12 @@ def _show_error(app, exc, detail: str, tb: str) -> None:
             app.log(f"  排查建议：{exc.hint}", "warn")
         if exc.detail:
             app.log(f"  原始输出：{exc.detail.strip()[:300]}", "info")
-        messagebox.showerror("操作失败", f"{exc.message}\n\n{exc.hint}".strip(), parent=app.root)
+        messagebox.showerror("操作失败", f"{exc.message}\n\n{exc.hint}".strip(), parent=app)
     else:
         app.log(f"✗ 发生异常：{detail}", "error")
         if tb:
             app.log(tb.strip()[-800:], "error")
-        messagebox.showerror("程序异常", f"{detail}\n\n详情见『日志』页。", parent=app.root)
+        messagebox.showerror("程序异常", f"{detail}\n\n详情见『日志』页。", parent=app)
 
 
 class Tooltip:

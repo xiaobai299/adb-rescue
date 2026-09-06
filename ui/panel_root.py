@@ -79,7 +79,7 @@ class RootPanel(ttk.Frame):
             lines = [f"Root：{'✔ 可用（' + st.method_text + '）' if st.available else '✘ 未获取'}"]
             if st.magisk_version:
                 lines.append(f"Magisk 版本：{st.magisk_version}")
-            if st.adbd_root:
+            if st.adbd_as_root:
                 lines.append("adbd：已以 root 运行")
             elif st.adb_root_ok:
                 lines.append("固件：userdebug（可执行『adb root』）")

@@ -239,6 +239,10 @@ class ScrcpyLauncher:
         self.adb = adb
         self.path = scrcpy_path or adb.scrcpy_path or locate_scrcpy() or ""
         self.proc: subprocess.Popen | None = None
+        # 可选回调：scrcpy 进程自行退出（如用户直接关闭窗口）时通知界面层。
+        # 在排空线程中回调（非主线程），界面层需自行调度回主线程。
+        self.on_exit = None
+        self._stopping = False  # 主动 stop() 后置位，避免误触 on_exit
 
     def available(self) -> bool:
         return bool(self.path) and os.path.isfile(self.path)
@@ -336,6 +340,7 @@ class ScrcpyLauncher:
                 except Exception:
                     pass
         flags = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
+        self._stopping = False
         self.proc = subprocess.Popen(
             args,
             stdin=subprocess.DEVNULL,
@@ -360,8 +365,16 @@ class ScrcpyLauncher:
                         break
         except Exception:  # noqa: BLE001
             pass
+        # 进程自然退出（stop() 会先置 _stopping 并把 proc 置 None）时通知界面层
+        if (self.on_exit and not self._stopping
+                and self.proc is not None and self.proc.poll() is not None):
+            try:
+                self.on_exit()
+            except Exception:  # noqa: BLE001
+                pass
 
     def stop(self) -> None:
+        self._stopping = True
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             try:

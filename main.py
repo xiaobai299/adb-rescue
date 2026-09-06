@@ -36,33 +36,76 @@ def _check_env() -> None:
 
 
 def _selftest() -> int:
-    """打包验证用：打印运行环境摘要后退出（不启动 GUI）。"""
-    print("== ADB 救援工具 自检 ==")
-    print(f"Python      : {sys.version.split()[0]}")
-    print(f"tkinter     : {tk.TkVersion}")
+    """打包验证用：输出运行环境摘要后退出（不启动 GUI）。
+
+    控制台运行时打印到 stdout；打包成无控制台 exe（sys.stdout 为 None）
+    时写入 exe 旁的 selftest.log，自检不通过时再弹窗提示。"""
+    lines: list[str] = []
+
+    def out(text: str = "") -> None:
+        lines.append(text)
+        try:
+            print(text)
+        except Exception:  # noqa: BLE001 - windowed exe 无 stdout，忽略
+            pass
+
+    out("== ADB 救援工具 自检 ==")
+    out(f"Python      : {sys.version.split()[0]}")
+    out(f"tkinter     : {tk.TkVersion}")
     try:
         import PIL
-        print(f"Pillow      : {PIL.__version__}")
+        out(f"Pillow      : {PIL.__version__}")
     except Exception as exc:  # noqa: BLE001
-        print(f"Pillow      : 缺失（{exc}）")
-    from core.adb import locate_adb, locate_scrcpy, candidate_adb_paths, app_base_dir
-    print(f"程序根目录  : {app_base_dir()}")
+        out(f"Pillow      : 缺失（{exc}）")
+    from core.adb import AdbClient, locate_adb, locate_scrcpy, app_base_dir
+    base = app_base_dir()
+    out(f"程序根目录  : {base}")
     adb = locate_adb()
-    print(f"adb         : {adb or '未找到'}")
+    out(f"adb         : {adb or '未找到'}")
     sc = locate_scrcpy()
-    print(f"scrcpy      : {sc or '未找到'}")
+    out(f"scrcpy      : {sc or '未找到'}")
     if adb:
-        from core.adb import AdbClient
-        print(f"adb 版本    : {AdbClient(adb_path=adb).version()}")
+        out(f"adb 版本    : {AdbClient(adb_path=adb).version()}")
     if sc:
         from core.screen import ScrcpyLauncher
-        print(f"scrcpy 版本 : {ScrcpyLauncher(AdbClient(adb_path=adb or ''), scrcpy_path=sc).version()}")
+        out(f"scrcpy 版本 : {ScrcpyLauncher(AdbClient(adb_path=adb or ''), scrcpy_path=sc).version()}")
     ok = bool(adb) and bool(sc)
-    print("结果: " + ("通过 ✔" if ok else "异常 ✘（缺少 adb 或 scrcpy，需将 tools/ 放在 exe 同级目录）"))
+    out("结果: " + ("通过 ✔" if ok else "异常 ✘（缺少 adb 或 scrcpy，需将 tools/ 放在 exe 同级目录）"))
+
+    if sys.stdout is None:
+        try:
+            with open(os.path.join(base, "selftest.log"), "w", encoding="utf-8") as fp:
+                fp.write("\n".join(lines) + "\n")
+        except OSError:
+            pass
+        if not ok:
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("自检未通过", "\n".join(lines) + "\n\n详情见 exe 旁 selftest.log")
+            root.destroy()
     return 0 if ok else 1
 
 
+def _enable_windows_high_dpi() -> None:
+    """声明高 DPI 感知（Windows）。
+
+    不声明时系统会把整个窗口位图拉伸，125%/150% 缩放的屏幕上文字发虚；
+    必须在创建任何 Tk 窗口之前调用。SetProcessDpiAwareness 重复声明会
+    返回错误，忽略即可。"""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # System DPI Aware
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 def main() -> None:
+    _enable_windows_high_dpi()
     if "--selftest" in sys.argv:
         # 避免 GBK 控制台无法打印 ✔ 等字符
         if hasattr(sys.stdout, "reconfigure"):

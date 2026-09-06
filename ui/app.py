@@ -48,9 +48,18 @@ class App(tk.Tk):
         self.panels: list = []
         self._busy_depth = 0
 
-        self.title("安卓手机救援控制工具（ADB） v2.0 Root 版")
-        self.geometry("1320x860")
-        self.minsize(1120, 720)
+        self.title("安卓手机救援控制工具（ADB） v2.0.5")
+        # 默认窗口尺寸按 DPI 缩放：高 DPI 屏上字体/控件按真实像素渲染，
+        # 固定 1320x860 物理像素会显得过小、行内容放不下
+        try:
+            dpi_scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
+        except tk.TclError:
+            dpi_scale = 1.0
+        w, h = int(1320 * dpi_scale), int(860 * dpi_scale)
+        w = min(w, self.winfo_screenwidth() - 40)
+        h = min(h, self.winfo_screenheight() - 60)
+        self.geometry(f"{w}x{h}")
+        self.minsize(int(1120 * dpi_scale), int(720 * dpi_scale))
         style_root(self)
 
         self._build_device_bar()
@@ -118,7 +127,8 @@ class App(tk.Tk):
         bar = ttk.Frame(self, padding=(10, 4))
         bar.pack(fill="x")
         self.status_var = tk.StringVar(value="就绪")
-        ttk.Label(bar, textvariable=self.status_var).pack(side="left")
+        self.status_label = ttk.Label(bar, textvariable=self.status_var)
+        self.status_label.pack(side="left")
         self.busy_var = tk.StringVar(value="")
         self.busy_label = ttk.Label(bar, textvariable=self.busy_var,
                                     foreground=COLOR["primary"])
@@ -137,7 +147,7 @@ class App(tk.Tk):
         self.status_var.set(text)
         color = {"info": COLOR["text"], "ok": COLOR["success"],
                  "warn": COLOR["warn"], "error": COLOR["danger"]}.get(level, COLOR["text"])
-        self.busy_label.configure(foreground=color)
+        self.status_label.configure(foreground=color)
 
     def set_busy(self, busy: bool, text: str = "执行中…") -> None:
         self._busy_depth = max(0, self._busy_depth + (1 if busy else -1))

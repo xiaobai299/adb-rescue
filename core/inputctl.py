@@ -212,6 +212,37 @@ class InputController:
 
     # ---------------- 屏幕 / 系统 ---------------- #
 
+    def open_notifications(self) -> None:
+        self._shell("cmd statusbar expand-notifications")
+
+    def collapse_notifications(self) -> None:
+        self._shell("cmd statusbar collapse")
+
+    def open_quick_settings(self) -> None:
+        self._shell("cmd statusbar expand-settings")
+
+    def lock_screen(self) -> None:
+        """锁屏（熄灭屏幕）。"""
+        self._shell("input keyevent 26")
+
+    def set_brightness(self, value: int) -> None:
+        """0-255 亮度。"""
+        value = max(0, min(255, int(value)))
+        self._shell(f"settings put system screen_brightness {value}")
+
+    def get_brightness(self) -> int | None:
+        res = self.adb.shell(self.serial, "settings get system screen_brightness", timeout=10)
+        try:
+            return int(res.stdout.strip())
+        except ValueError:
+            return None
+
+    def start_activity(self, package: str, activity: str = "") -> None:
+        if activity:
+            self._shell(f"am start -n {package}/{activity}")
+        else:
+            self._shell(f"monkey -p {shell_quote(package)} -c android.intent.category.LAUNCHER 1")
+
     # ---------------- 唤醒与保活 ---------------- #
 
     def screen_state(self) -> str:
@@ -236,6 +267,54 @@ class InputController:
         if re.search(r"isKeyguardShowing=false", res.stdout):
             return False
         return None
+
+    def unlock_with_password(self, password: str) -> dict:
+        """一键解锁：确保亮屏 → 唤出密码面板 → 输入密码 → 回车提交 → 验证。
+
+        仅限设备所有者输入自己已知的密码；不含任何绕过/猜测逻辑。
+        兼容两类 ROM：密码面板常驻的（上滑无副作用）与停在时钟页的
+        （先上滑才有输入焦点）。首次失败时按"免上滑直接输入"重试一次。
+        """
+        import time as _t
+        if not password:
+            raise AdbError("未填写密码",
+                           "请先在『键盘输入』框中输入锁屏密码，再点『一键解锁』。")
+        if not ASCII_ONLY.match(password):
+            raise AdbError("锁屏密码格式不支持",
+                           "锁屏 PIN/密码需为英文、数字与常见符号；"
+                           "锁屏界面无法使用中文输入通道。")
+        report: dict = {"steps": [], "locked_before": None, "locked_after": None}
+        if self.screen_state() != "Awake":
+            self.wake(extend_timeout=True)
+            report["steps"].append("已唤醒屏幕")
+            _t.sleep(0.8)
+        report["locked_before"] = self.is_locked()
+        if report["locked_before"] is False:
+            report["steps"].append("设备未在锁屏，无需解锁")
+            report["locked_after"] = False
+            return report
+        try:
+            res = self.adb.shell(self.serial, "wm size", timeout=10)
+            m = re.search(r"(\d+)x(\d+)", res.stdout or "")
+            w, h = (int(m.group(1)), int(m.group(2))) if m else (1080, 2400)
+        except Exception:  # noqa: BLE001
+            w, h = 1080, 2400
+        self.swipe(w // 2, int(h * 0.80), w // 2, int(h * 0.35), 300)
+        _t.sleep(0.9)
+        report["steps"].append("已唤出密码面板（上滑）")
+        self.input_text(password)
+        self.key_event(66)
+        report["steps"].append("已输入密码并回车提交")
+        _t.sleep(1.5)
+        report["locked_after"] = self.is_locked()
+        if report["locked_after"] is not False:
+            # 部分 ROM 无需上滑（面板常驻），补一次直接输入
+            self.input_text(password)
+            self.key_event(66)
+            _t.sleep(1.5)
+            report["steps"].append("已按免上滑方式重试一次")
+            report["locked_after"] = self.is_locked()
+        return report
 
     def get_screen_timeout(self) -> int | None:
         res = self.adb.shell(self.serial, "settings get system screen_off_timeout", timeout=10)
@@ -369,37 +448,6 @@ class KeepAwake:
             except Exception as exc:  # noqa: BLE001
                 self._emit(f"保活检测异常：{exc}", "error")
             self._stop.wait(self.interval)
-
-    def open_notifications(self) -> None:
-        self._shell("cmd statusbar expand-notifications")
-
-    def collapse_notifications(self) -> None:
-        self._shell("cmd statusbar collapse")
-
-    def open_quick_settings(self) -> None:
-        self._shell("cmd statusbar expand-settings")
-
-    def lock_screen(self) -> None:
-        """锁屏（熄灭屏幕）。"""
-        self._shell("input keyevent 26")
-
-    def set_brightness(self, value: int) -> None:
-        """0-255 亮度。"""
-        value = max(0, min(255, int(value)))
-        self._shell(f"settings put system screen_brightness {value}")
-
-    def get_brightness(self) -> int | None:
-        res = self.adb.shell(self.serial, "settings get system screen_brightness", timeout=10)
-        try:
-            return int(res.stdout.strip())
-        except ValueError:
-            return None
-
-    def start_activity(self, package: str, activity: str = "") -> None:
-        if activity:
-            self._shell(f"am start -n {package}/{activity}")
-        else:
-            self._shell(f"monkey -p {shell_quote(package)} -c android.intent.category.LAUNCHER 1")
 
 
 class InputQueue:

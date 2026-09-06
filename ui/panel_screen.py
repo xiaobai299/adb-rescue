@@ -31,6 +31,8 @@ class ScreenPanel(ttk.Frame):
         self._fullscreen = False
 
         self._build_toolbar()
+        self._build_scrcpy_bar()
+        self._build_builtin_bar()
         self._build_wake_bar()
         self._build_canvas()
         self._build_keys()
@@ -42,75 +44,65 @@ class ScreenPanel(ttk.Frame):
     # ------------------------------------------------------------------ #
 
     def _build_toolbar(self) -> None:
+        """主控制条：开始/停止投屏、引擎选择、唤醒入口、全屏。
+
+        每页只保留一个蓝色主按钮（开始投屏）；它按下方所选引擎启动，
+        scrcpy 缺失时自动回退内置引擎，保证救援场景下按钮永远可用。
+        """
         bar = ttk.Frame(self, padding=(8, 6))
         bar.pack(fill="x")
 
         self.btn_start = ttk.Button(bar, text="开始投屏", style="Accent.TButton",
-                                    command=self.start)
+                                    command=self.start_mirror)
         self.btn_start.pack(side="left")
-        self.btn_stop = ttk.Button(bar, text="停止投屏", command=self.stop, state="disabled")
+        self.btn_stop = ttk.Button(bar, text="停止投屏", command=self.stop_mirror,
+                                   state="disabled")
         self.btn_stop.pack(side="left", padx=6)
+        Tooltip(self.btn_start,
+                "用下方所选引擎开始投屏。\n"
+                "默认 scrcpy 高帧率引擎（推荐，自动套用稳妥参数 720p/60 帧/8M）；\n"
+                "未找到 scrcpy 时自动回退到内置引擎。")
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
 
-        ttk.Label(bar, text="画质").pack(side="left")
-        self.quality_var = tk.StringVar(value=self.app.cfg.get("quality", "标准"))
-        q = ttk.Combobox(bar, textvariable=self.quality_var, width=12, state="readonly",
-                         values=list(QUALITY_PRESETS.keys()))
-        q.pack(side="left", padx=(2, 8))
-        q.bind("<<ComboboxSelected>>", self._apply_settings)
-        Tooltip(q, "画面越清晰，单帧数据量越大、帧率越低。救援场景建议先用『标准』。")
-
-        ttk.Label(bar, text="帧率").pack(side="left")
-        self.fps_var = tk.StringVar(value=str(self.app.cfg.get("fps", 6)))
-        fps = ttk.Spinbox(bar, from_=1, to=30, width=4, textvariable=self.fps_var,
-                          command=self._apply_settings)
-        fps.pack(side="left", padx=(2, 8))
-        Tooltip(fps, "内置引擎受 adb 单次截图耗时限制，实测通常只有 3~10 FPS；\n"
-                     "把这里调高也不会超过设备的实际出图速度。\n"
-                     "需要 60/120 帧请用右边的『高帧率投屏 scrcpy』。")
-
-        ttk.Label(bar, text="旋转").pack(side="left")
-        self.rot_var = tk.StringVar(value=str(self.app.cfg.get("rotation", 0)))
-        rot = ttk.Combobox(bar, textvariable=self.rot_var, width=6, state="readonly",
-                           values=["0", "90", "180", "270"])
-        rot.pack(side="left", padx=(2, 8))
-        rot.bind("<<ComboboxSelected>>", self._apply_settings)
-
-        ttk.Label(bar, text="最大宽度").pack(side="left")
-        self.width_var = tk.StringVar(value=str(self.app.cfg.get("max_width", 720)))
-        w = ttk.Spinbox(bar, from_=0, to=2560, increment=80, width=6,
-                        textvariable=self.width_var, command=self._apply_settings)
-        w.pack(side="left", padx=(2, 8))
-        Tooltip(w, "限制传输画面的宽度可显著提速，0 表示按原始分辨率。")
+        ttk.Label(bar, text="引擎").pack(side="left")
+        self.engine_var = tk.StringVar(value="scrcpy 高帧率（推荐）")
+        eng = ttk.Combobox(bar, textvariable=self.engine_var, width=20, state="readonly",
+                           values=["scrcpy 高帧率（推荐）", "内置引擎（3~10 FPS 兜底）"])
+        eng.pack(side="left", padx=(2, 8))
+        Tooltip(eng, "scrcpy：设备端硬件编码，可跑满屏幕刷新率，救援首选。\n"
+                     "内置引擎：adb 截帧兜底，无需 scrcpy，实测只有 3~10 FPS。")
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
 
-        ttk.Label(bar, text="显示缩放").pack(side="left")
-        self.zoom_var = tk.StringVar(value="适应窗口")
-        z = ttk.Combobox(bar, textvariable=self.zoom_var, width=10, state="readonly",
-                         values=["适应窗口", "50%", "75%", "100%", "150%"])
-        z.pack(side="left", padx=(2, 8))
-        z.bind("<<ComboboxSelected>>", lambda _e: self._render())
-
-        ttk.Button(bar, text="全屏 (F11)", command=self.toggle_fullscreen).pack(side="left", padx=2)
-
-        self._build_scrcpy_bar()
-
-    def _build_wake_bar(self) -> None:
-        """唤醒与保活 —— 救援场景的第一步，放在投屏页最显眼的位置。"""
-        box = ttk.LabelFrame(self, text="  唤醒与保活（屏幕损坏/黑屏时先做这一步）  ", padding=6)
-        box.pack(fill="x", padx=8, pady=(0, 4))
-
-        self.btn_wake = ttk.Button(box, text="唤醒屏幕", style="Accent.TButton",
+        self.btn_wake = ttk.Button(bar, text="唤醒屏幕",
                                    command=self.do_wake, state="disabled")
         self.btn_wake.pack(side="left")
-        ttk.Button(box, text="唤醒并调高亮度", command=lambda: self.do_wake(brighten=True)).pack(
-            side="left", padx=4)
+        self.btn_wake_bright = ttk.Button(bar, text="唤醒并调高亮度",
+                                          command=lambda: self.do_wake(brighten=True),
+                                          state="disabled")
+        self.btn_wake_bright.pack(side="left", padx=(4, 0))
+        Tooltip(self.btn_wake_bright,
+                "点亮屏幕并临时调高亮度（恢复亮度需在手机上操作或重启后自动还原）。")
+
+        self.btn_unlock = ttk.Button(bar, text="一键解锁",
+                                     command=self.do_unlock, state="disabled")
+        self.btn_unlock.pack(side="left", padx=(4, 0))
+        Tooltip(self.btn_unlock,
+                "用下方『键盘输入』框里的内容作为锁屏密码，一键完成：\n"
+                "唤醒 → 唤出密码面板 → 输入 → 回车提交 → 验证。\n"
+                "仅限输入你自己的已知密码；本工具不提供任何绕过锁屏的功能。")
+
+        ttk.Button(bar, text="全屏 (F11)", command=self.toggle_fullscreen).pack(side="right")
+
+    def _build_wake_bar(self) -> None:
+        """自动保活与屏幕状态；唤醒按钮在上方主控制条。"""
+        box = ttk.LabelFrame(self, text="  保活与屏幕状态（救援第一步：先点亮屏幕）  ", padding=6)
+        box.pack(fill="x", padx=8, pady=(0, 4))
 
         self.keep_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(box, text="自动保活（息屏后自动重新点亮）",
-                        variable=self.keep_var, command=self.toggle_keep_awake).pack(side="left", padx=(10, 4))
+                        variable=self.keep_var, command=self.toggle_keep_awake).pack(side="left")
 
         ttk.Label(box, text="间隔").pack(side="left")
         self.keep_interval = tk.StringVar(value="15")
@@ -119,8 +111,6 @@ class ScreenPanel(ttk.Frame):
 
         self.state_lbl = ttk.Label(box, text="状态：未知", style="Title.TLabel")
         self.state_lbl.pack(side="right", padx=6)
-
-        self._wake_state_job = None
 
     # ---------------- 唤醒 ---------------- #
 
@@ -154,6 +144,40 @@ class ScreenPanel(ttk.Frame):
             self.refresh_wake_state()
 
         run_async(self.app, work, on_done=done, busy_text="唤醒屏幕…")
+
+    def do_unlock(self) -> None:
+        """一键解锁：用『键盘输入』框内容作为锁屏密码（机主自行输入已知密码）。"""
+        password = self.text_var.get()
+        if not password:
+            self.app.log("请先在下方『键盘输入』框中输入锁屏密码，再点『一键解锁』。", "warn")
+            return
+        try:
+            ctl = self._require_input()
+        except AdbError as exc:
+            self.app.log(f"✗ {exc.message}", "error")
+            if exc.hint:
+                self.app.log(f"  {exc.hint}", "warn")
+            return
+
+        def work():
+            return ctl.unlock_with_password(password)
+
+        def done(rep):
+            for step in rep["steps"]:
+                self.app.log(f"· {step}", "info")
+            if rep["locked_after"] is False:
+                self.app.log("✓ 解锁成功", "ok")
+                self.hint_var.set("设备已解锁")
+                self.text_var.set("")  # 密码用完即清，不留存
+            elif rep["locked_after"] is None:
+                self.app.log("? 无法读取锁屏状态。请投屏确认画面。", "warn")
+                self.refresh_wake_state()
+            else:
+                self.app.log("✗ 仍在锁屏。若密码确认无误：可能是系统因多次失败"
+                             "进入冷却倒计时，稍等后再试；或先投屏查看当前画面。", "error")
+                self.refresh_wake_state()
+
+        run_async(self.app, work, on_done=done, busy_text="解锁中…")
 
     def toggle_keep_awake(self) -> None:
         if self.keep_var.get():
@@ -205,63 +229,52 @@ class ScreenPanel(ttk.Frame):
         self._wake_state_job = self.after(3000, self._schedule_wake_state)
 
     def _build_scrcpy_bar(self) -> None:
-        """高帧率投屏（scrcpy）独立控制条。
+        """高帧率投屏（scrcpy）参数区。
 
         scrcpy 通过设备端 MediaCodec 硬件编码传输 H.264/H.265 视频流，
-        可以跑到屏幕原生刷新率（你的 120Hz 屏可跑满 120 帧），
-        这是内置截帧引擎无法达到的量级。
+        可以跑到屏幕原生刷新率（你的 120Hz 屏可跑满 120 帧）。
+        启动/停止统一由主控制条的『开始投屏 / 停止投屏』负责。
         """
-        box = ttk.LabelFrame(self, text="  高帧率投屏（scrcpy 硬件编码，可跑满屏幕刷新率）  ",
+        box = ttk.LabelFrame(self, text="  scrcpy 高帧率引擎参数（推荐）  ",
                              padding=6)
         box.pack(fill="x", padx=8, pady=(0, 4))
 
-        self.btn_scrcpy = ttk.Button(box, text="启动高帧率投屏", style="Accent.TButton",
-                                     command=self.launch_scrcpy, state="disabled")
-        self.btn_scrcpy.pack(side="left")
-        self.btn_scrcpy_stop = ttk.Button(box, text="停止", command=self.stop_scrcpy,
-                                          state="disabled")
-        self.btn_scrcpy_stop.pack(side="left", padx=4)
-        self.btn_smooth = ttk.Button(box, text="一键流畅投屏", style="Accent.TButton",
-                                     command=self.launch_scrcpy_smooth, state="disabled")
-        self.btn_smooth.pack(side="left", padx=(0, 4))
-        Tooltip(self.btn_smooth, "一键套用与『直接双击 scrcpy.exe』一致的稳妥参数并启动：\n"
-                                 "分辨率 720p、60 帧、8M 码率、默认显示缓冲、USB 直连、\n"
-                                 "scrcpy 窗口直接控制。\n"
-                                 "画面卡顿先点这个，通常即可解决（不勾选低延迟/TCP-IP）。")
+        # 每行独立 Frame：同一父容器里混用 side="left"/"top" 会让 packer
+        # 把后打包的行塞进右侧空腔（旧版此行因此被裁在窗口外）
+        row1 = ttk.Frame(box)
+        row1.pack(fill="x")
 
-        ttk.Separator(box, orient="vertical").pack(side="left", fill="y", padx=6)
-
-        ttk.Label(box, text="帧率").pack(side="left")
+        ttk.Label(row1, text="帧率").pack(side="left")
         self.sc_fps_var = tk.StringVar(value=self._fps_label(self.app.cfg.get("scrcpy_fps", 0)))
-        fps_cb = ttk.Combobox(box, textvariable=self.sc_fps_var, width=14, state="readonly",
+        fps_cb = ttk.Combobox(row1, textvariable=self.sc_fps_var, width=14, state="readonly",
                               values=list(ScrcpyLauncher.FPS_PRESETS.keys()))
         fps_cb.pack(side="left", padx=(2, 6))
         Tooltip(fps_cb, "选『不限（跟随设备）』时不限制采集帧率，120Hz 屏幕可跑到 120 帧；\n"
                         "画面卡顿时降到 60 更稳。")
 
-        ttk.Label(box, text="分辨率").pack(side="left")
+        ttk.Label(row1, text="分辨率").pack(side="left")
         self.sc_size_var = tk.StringVar(value=self._size_label(self.app.cfg.get("scrcpy_size", 0)))
-        size_cb = ttk.Combobox(box, textvariable=self.sc_size_var, width=10, state="readonly",
+        size_cb = ttk.Combobox(row1, textvariable=self.sc_size_var, width=10, state="readonly",
                                values=["原生 1080", "1920", "1440", "1080", "720"])
         size_cb.pack(side="left", padx=(2, 6))
 
-        ttk.Label(box, text="码率").pack(side="left")
+        ttk.Label(row1, text="码率").pack(side="left")
         self.sc_bitrate_var = tk.StringVar(value=self.app.cfg.get("scrcpy_bitrate", "8M"))
-        br_cb = ttk.Combobox(box, textvariable=self.sc_bitrate_var, width=6, state="readonly",
+        br_cb = ttk.Combobox(row1, textvariable=self.sc_bitrate_var, width=6, state="readonly",
                              values=["4M", "8M", "12M", "16M", "24M"])
         br_cb.pack(side="left", padx=(2, 6))
         Tooltip(br_cb, "帧率越高需要的码率越大。120 帧建议 12M 以上；USB 2.0 口上限约 25~30M。")
 
-        ttk.Label(box, text="编码").pack(side="left")
+        ttk.Label(row1, text="编码").pack(side="left")
         self.sc_codec_var = tk.StringVar(value=self.app.cfg.get("scrcpy_codec", "h264"))
-        ttk.Combobox(box, textvariable=self.sc_codec_var, width=6, state="readonly",
+        ttk.Combobox(row1, textvariable=self.sc_codec_var, width=6, state="readonly",
                      values=["h264", "h265", "av1"]).pack(side="left", padx=(2, 6))
 
         self.sc_control_var = tk.BooleanVar(value=not self.app.cfg.get("scrcpy_no_control", True))
-        ttk.Checkbutton(box, text="scrcpy 窗口直接控制（延迟更低）",
+        ttk.Checkbutton(row1, text="scrcpy 窗口直接控制（延迟更低）",
                         variable=self.sc_control_var).pack(side="left", padx=(6, 2))
         self.sc_off_var = tk.BooleanVar(value=bool(self.app.cfg.get("scrcpy_turn_off", False)))
-        ttk.Checkbutton(box, text="关闭手机屏幕", variable=self.sc_off_var).pack(side="left")
+        ttk.Checkbutton(row1, text="关闭手机屏幕", variable=self.sc_off_var).pack(side="left")
 
         bar2 = ttk.Frame(box)
         bar2.pack(fill="x", pady=(6, 0))
@@ -281,9 +294,55 @@ class ScreenPanel(ttk.Frame):
                       "音频：把手机声音同步到电脑（需 scrcpy 窗口直接控制）。")
 
         self.sc_info_var = tk.StringVar(value="")
-        ttk.Label(self, textvariable=self.sc_info_var, style="Muted.TLabel").pack(anchor="w", padx=14)
+        ttk.Label(box, textvariable=self.sc_info_var, style="Muted.TLabel").pack(
+            anchor="w", pady=(4, 0))
 
         self.after(500, self._refresh_scrcpy_state)
+
+    def _build_builtin_bar(self) -> None:
+        """内置帧引擎参数（兜底：无 scrcpy 或低配环境使用）。"""
+        box = ttk.LabelFrame(self, text="  内置引擎参数（adb 截帧兜底，3~10 FPS）  ", padding=6)
+        box.pack(fill="x", padx=8, pady=(0, 4))
+
+        ttk.Label(box, text="画质").pack(side="left")
+        self.quality_var = tk.StringVar(value=self.app.cfg.get("quality", "标准"))
+        q = ttk.Combobox(box, textvariable=self.quality_var, width=12, state="readonly",
+                         values=list(QUALITY_PRESETS.keys()))
+        q.pack(side="left", padx=(2, 8))
+        q.bind("<<ComboboxSelected>>", self._apply_settings)
+        Tooltip(q, "画面越清晰，单帧数据量越大、帧率越低。救援场景建议先用『标准』。")
+
+        ttk.Label(box, text="帧率").pack(side="left")
+        self.fps_var = tk.StringVar(value=str(self.app.cfg.get("fps", 6)))
+        fps = ttk.Spinbox(box, from_=1, to=30, width=4, textvariable=self.fps_var,
+                          command=self._apply_settings)
+        fps.pack(side="left", padx=(2, 8))
+        Tooltip(fps, "内置引擎受 adb 单次截图耗时限制，实测通常只有 3~10 FPS；\n"
+                     "把这里调高也不会超过设备的实际出图速度。\n"
+                     "需要 60/120 帧请选择『scrcpy 高帧率』引擎。")
+
+        ttk.Label(box, text="旋转").pack(side="left")
+        self.rot_var = tk.StringVar(value=str(self.app.cfg.get("rotation", 0)))
+        rot = ttk.Combobox(box, textvariable=self.rot_var, width=6, state="readonly",
+                           values=["0", "90", "180", "270"])
+        rot.pack(side="left", padx=(2, 8))
+        rot.bind("<<ComboboxSelected>>", self._apply_settings)
+
+        ttk.Label(box, text="最大宽度").pack(side="left")
+        self.width_var = tk.StringVar(value=str(self.app.cfg.get("max_width", 720)))
+        w = ttk.Spinbox(box, from_=0, to=2560, increment=80, width=6,
+                        textvariable=self.width_var, command=self._apply_settings)
+        w.pack(side="left", padx=(2, 8))
+        Tooltip(w, "限制传输画面的宽度可显著提速，0 表示按原始分辨率。")
+
+        ttk.Separator(box, orient="vertical").pack(side="left", fill="y", padx=8)
+
+        ttk.Label(box, text="显示缩放").pack(side="left")
+        self.zoom_var = tk.StringVar(value="适应窗口")
+        z = ttk.Combobox(box, textvariable=self.zoom_var, width=10, state="readonly",
+                         values=["适应窗口", "50%", "75%", "100%", "150%"])
+        z.pack(side="left", padx=(2, 8))
+        z.bind("<<ComboboxSelected>>", lambda _e: self._render())
 
     @staticmethod
     def _fps_label(value: int) -> str:
@@ -299,23 +358,24 @@ class ScreenPanel(ttk.Frame):
     def _refresh_scrcpy_state(self) -> None:
         if self.scrcpy is None or self.scrcpy.proc is None:
             self.scrcpy = ScrcpyLauncher(self.app.adb)
+            self.scrcpy.on_exit = lambda: self.app.after_ui(self._scrcpy_exited)
         if self.scrcpy.available():
-            self.btn_scrcpy.configure(state="normal")
-            self.btn_smooth.configure(state="normal")
+            # 版本输出自带官网 URL（如 "scrcpy 4.1 <https://...>"），对用户是噪音
+            ver = self.scrcpy.version().split(" <")[0].strip()
             self.sc_info_var.set(
-                f"已就绪：{self.scrcpy.version()}（{self.scrcpy.path}）｜ "
-                f"启动后会自动点亮并保持屏幕常亮（手机息屏时帧率会掉到个位数）｜ "
-                f"画面卡请点『一键流畅投屏』")
+                f"已就绪：{ver} ｜ 启动后自动点亮并保持屏幕常亮"
+                f"（手机息屏时帧率会掉到个位数）")
         else:
-            self.btn_scrcpy.configure(state="disabled")
-            self.btn_smooth.configure(state="disabled")
-            self.sc_info_var.set("未找到 scrcpy：可使用左侧内置引擎（3~10 FPS），"
-                                 "或在『设置』中指定 scrcpy.exe 路径（例如 D:\\scrcpy-win64-v4.1\\scrcpy.exe）。")
+            self.sc_info_var.set(
+                "未找到 scrcpy：点『开始投屏』将自动改用内置引擎（3~10 FPS）；"
+                "也可在『设置』中指定 scrcpy.exe 路径。")
 
     def _build_canvas(self) -> None:
         wrap = ttk.Frame(self)
         wrap.pack(fill="both", expand=True, padx=8)
-        self.canvas = tk.Canvas(wrap, bg="#101216", highlightthickness=1,
+        # 默认高度取小值：投屏页固定控件较多，画布靠 expand 撑满剩余空间，
+        # 默认窗口（860 高）下才不会把下方按键/输入区挤出窗外
+        self.canvas = tk.Canvas(wrap, bg="#101216", height=180, highlightthickness=1,
                                 highlightbackground=COLOR["border"])
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda _e: self._render())
@@ -342,21 +402,32 @@ class ScreenPanel(ttk.Frame):
         box = ttk.LabelFrame(self, text="  按键与手势  ", padding=6)
         box.pack(fill="x", padx=8, pady=(4, 2))
 
-        keys = ["返回", "Home", "多任务", "唤醒", "电源", "音量+", "音量-",
-                "通知栏", "快捷设置", "删除", "回车", "截图(系统)"]
-        for idx, name in enumerate(keys):
-            b = ttk.Button(box, text=name, width=9, command=lambda n=name: self._key(n))
-            b.grid(row=0, column=idx, padx=2, pady=2)
+        # 分两行排布，避免窄窗口（最小宽 1120）时按钮被裁掉
+        keys_top = ["返回", "Home", "多任务", "唤醒", "电源", "音量+", "音量-",
+                    "通知栏", "快捷设置"]
+        keys_bottom = ["删除", "回车", "截图(系统)"]
+        for idx, name in enumerate(keys_top):
+            ttk.Button(box, text=name, width=9,
+                       command=lambda n=name: self._key(n)).grid(row=0, column=idx,
+                                                                 padx=2, pady=2)
+        for idx, name in enumerate(keys_bottom):
+            ttk.Button(box, text=name, width=9,
+                       command=lambda n=name: self._key(n)).grid(row=1, column=idx,
+                                                                 padx=2, pady=2)
 
-        ttk.Separator(box, orient="vertical").grid(row=0, column=len(keys), sticky="ns", padx=6)
+        ttk.Separator(box, orient="vertical").grid(row=0, column=len(keys_top),
+                                                   rowspan=2, sticky="ns", padx=6)
 
         gestures = [("上滑", "上"), ("下滑", "下"), ("左滑", "左"), ("右滑", "右")]
         for i, (label, d) in enumerate(gestures):
-            b = ttk.Button(box, text=label, width=7, command=lambda dd=d: self._swipe_dir(dd))
-            b.grid(row=0, column=len(keys) + 1 + i, padx=2)
+            ttk.Button(box, text=label, width=7,
+                       command=lambda dd=d: self._swipe_dir(dd)).grid(
+                row=0, column=len(keys_top) + 1 + i, padx=2, pady=2)
 
         ttk.Button(box, text="长按电源菜单", width=12,
-                   command=self._long_power).grid(row=0, column=len(keys) + 6, padx=4)
+                   command=self._long_power).grid(row=1, column=len(keys_top) + 1,
+                                                  columnspan=2, padx=4, pady=2,
+                                                  sticky="ew")
 
     def _build_input(self) -> None:
         box = ttk.LabelFrame(self, text="  键盘输入  ", padding=6)
@@ -389,11 +460,13 @@ class ScreenPanel(ttk.Frame):
     def on_device(self, device) -> None:
         usable = device is not None and device.online
         self.btn_start.configure(state="normal" if usable else "disabled")
-        self.btn_scrcpy.configure(state="normal" if usable else "disabled")
-        self.btn_smooth.configure(state="normal" if usable else "disabled")
         self.btn_wake.configure(state="normal" if usable else "disabled")
+        self.btn_wake_bright.configure(state="normal" if usable else "disabled")
+        self.btn_unlock.configure(state="normal" if usable else "disabled")
         if not usable:
             self.stop()
+            if self.scrcpy and self.scrcpy.proc and self.scrcpy.proc.poll() is None:
+                self.stop_scrcpy()
             if self.keeper:
                 self.keep_var.set(False)
                 self.toggle_keep_awake()
@@ -417,6 +490,29 @@ class ScreenPanel(ttk.Frame):
     def _clamp_fps(default: int = 8) -> int:
         """内置引擎帧率上限 30；再高也没有意义，单次截图耗时才是瓶颈。"""
         return max(1, min(30, default))
+
+    def start_mirror(self) -> None:
+        """主控制条『开始投屏』：按所选引擎启动。
+
+        scrcpy 引擎自动套用与『直接双击 scrcpy.exe』一致的稳妥参数；
+        未找到 scrcpy 时自动回退内置引擎，保证按钮在救援场景永远可用。
+        """
+        if self.engine_var.get().startswith("scrcpy"):
+            if self.scrcpy.available():
+                self.launch_scrcpy_smooth()
+            else:
+                self.app.log("未找到 scrcpy，已改用内置引擎（3~10 FPS 兜底）；"
+                             "可在『设置』中指定 scrcpy.exe 路径。", "warn")
+                self.start()
+            return
+        self.start()
+
+    def stop_mirror(self) -> None:
+        """停止任一正在运行的投屏引擎（两个引擎共用『停止投屏』按钮）。"""
+        if self.streamer and self.streamer.running:
+            self.stop()
+        if self.scrcpy and self.scrcpy.proc and self.scrcpy.proc.poll() is None:
+            self.stop_scrcpy()
 
     def start(self) -> None:
         if self.streamer and self.streamer.running:
@@ -718,7 +814,7 @@ class ScreenPanel(ttk.Frame):
             self.app.attributes("-fullscreen", False)
 
     def launch_scrcpy_smooth(self) -> None:
-        """一键流畅投屏：套用与"直接双击 scrcpy.exe"一致的稳妥参数后启动。
+        """以"直接双击 scrcpy.exe"的稳妥参数启动 scrcpy（主按钮 scrcpy 引擎路径）。
 
         直接运行的 scrcpy（USB 直连、8M、默认缓冲、直接控制）实测不卡；
         本方法把参数统一为该配置并降为 720p/60 帧，进一步减轻电脑解码负担。
@@ -744,12 +840,15 @@ class ScreenPanel(ttk.Frame):
                 self.app.log(f"  {exc.hint}", "warn")
             return
         if not self.scrcpy.available():
-            self.app.log("未找到 scrcpy。可继续使用左侧内置引擎，或在『设置』中指定路径。", "warn")
+            self.app.log("未找到 scrcpy。可继续使用内置引擎，或在『设置』中指定路径。", "warn")
             return
         # 互斥：先停掉内置帧引擎，避免两个采集通道同时跑、争抢 USB 带宽导致画面卡顿
         if self.streamer and self.streamer.running:
             self.stop()
             self.app.log("已停止内置引擎（scrcpy 与内置引擎不可同时运行，避免抢带宽）。", "warn")
+        # 上一个 scrcpy 实例还在跑时先停掉，避免两个窗口争抢同一设备
+        if self.scrcpy.proc and self.scrcpy.proc.poll() is None:
+            self.stop_scrcpy()
 
         max_fps = ScrcpyLauncher.FPS_PRESETS.get(self.sc_fps_var.get(), 0)
         size_text = self.sc_size_var.get()
@@ -790,7 +889,8 @@ class ScreenPanel(ttk.Frame):
             return True
 
         def done(_v):
-            self.btn_scrcpy_stop.configure(state="normal")
+            self.btn_start.configure(state="disabled")
+            self.btn_stop.configure(state="normal")
             fps_text = "不限（跟随设备，最高可达屏幕刷新率）" if max_fps == 0 else f"{max_fps} FPS"
             ctrl_text = "scrcpy 窗口直接控制" if not no_control else "控制仍在本窗口完成"
             extra = []
@@ -813,5 +913,17 @@ class ScreenPanel(ttk.Frame):
 
     def stop_scrcpy(self) -> None:
         self.scrcpy.stop()
-        self.btn_scrcpy_stop.configure(state="disabled")
         self.app.log("scrcpy 已停止", "info")
+        if not (self.streamer and self.streamer.running):
+            self.btn_start.configure(state="normal")
+            self.btn_stop.configure(state="disabled")
+
+    def _scrcpy_exited(self) -> None:
+        """scrcpy 窗口被用户直接关闭时恢复按钮状态（主动停止不会走到这里）。"""
+        if self.scrcpy.proc is None:
+            return
+        self.scrcpy.proc = None
+        self.app.log("scrcpy 已退出。", "info")
+        if not (self.streamer and self.streamer.running):
+            self.btn_start.configure(state="normal")
+            self.btn_stop.configure(state="disabled")
