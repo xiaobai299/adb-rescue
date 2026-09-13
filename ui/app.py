@@ -48,7 +48,7 @@ class App(tk.Tk):
         self.panels: list = []
         self._busy_depth = 0
 
-        self.title("安卓手机救援控制工具（ADB） v2.0.5")
+        self.title("安卓手机救援控制工具（ADB） v2.1")
         # 默认窗口尺寸按 DPI 缩放：高 DPI 屏上字体/控件按真实像素渲染，
         # 固定 1320x860 物理像素会显得过小、行内容放不下
         try:
@@ -267,6 +267,7 @@ class App(tk.Tk):
                 self.dev_var.set("")
                 self.device = None
                 self.input = None
+                self.input_q = None
                 self.state_var.set("未检测到设备")
                 self.state_label.configure(foreground=COLOR["danger"])
                 self.log("未检测到设备：请检查数据线、USB 调试开关与驱动程序。", "warn")
@@ -281,6 +282,7 @@ class App(tk.Tk):
                 self.log(f"检测到 {len(devices)} 台设备：" +
                          "，".join(f"{d.display_name}[{d.state_text}]" for d in devices), "ok")
                 self.select_device()  # 内部会通知各页面
+                self._maybe_auto_backup(target)
                 if not any(d.online for d in devices):
                     self.after(300, self.show_unauthorized_help)
 
@@ -324,6 +326,32 @@ class App(tk.Tk):
                 self.log(f"  {exc.hint}", "warn")
         else:
             self.log(f"✗ 输入异常：{exc}", "error")
+
+    def _maybe_auto_backup(self, dev) -> None:
+        """设备在线时按配置触发自动备份（带冷却，避免每次刷新都跑）。"""
+        try:
+            if dev is None or not getattr(dev, "online", False):
+                return
+            if not self.cfg.get("auto_backup_enabled", False):
+                return
+            import time as _t
+            last = self.cfg.get("auto_backup_last") or {}
+            if not isinstance(last, dict):
+                last = {}
+            cooldown = max(0, int(self.cfg.get("auto_backup_cooldown", 30) or 0)) * 60
+            prev = 0.0
+            try:
+                prev = float(last.get(dev.serial, 0) or 0)
+            except (TypeError, ValueError):
+                prev = 0.0
+            if _t.time() - prev < cooldown:
+                return
+            last[dev.serial] = _t.time()
+            self.cfg.set("auto_backup_last", last)
+            self.log(f"设备上线，自动备份启动：{dev.display_name}", "info")
+            self.files_panel.run_auto_backup(triggered=True)
+        except Exception as exc:  # noqa: BLE001 - 触发失败不影响主流程
+            self.log(f"自动备份触发异常：{exc}", "warn")
 
     def _notify_panels(self, device) -> None:
         """把设备变更通知到所有功能页；单个页面出错不影响整体。"""

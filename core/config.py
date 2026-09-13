@@ -36,6 +36,12 @@ DEFAULTS: dict = {
     "scrcpy_low_latency": False,  # 低延迟模式：0 显示缓冲（取消抖动补偿，默认关闭）
     "scrcpy_tcpip": False,        # 无线 TCP/IP 连接（仅无线场景；USB 直连保持关闭）
     "scrcpy_audio": False,        # 同步手机音频到电脑
+    # 自动备份（一插即救）
+    "auto_backup_enabled": False,
+    "auto_backup_items": ["photos", "screenshots", "sms", "contacts", "calllog"],
+    "auto_backup_dir": "",            # 空 = 导出目录/AutoBackup
+    "auto_backup_cooldown": 30,       # 同一设备两次自动备份的最小间隔（分钟）
+    "auto_backup_last": {},           # serial -> 上次触发时间戳
     # 运维
     "confirm_destructive": True,
     "logcat_filter": "",

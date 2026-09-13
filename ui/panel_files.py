@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""数据导出页：远程文件浏览、批量导出、通讯录/短信/通话记录导出。"""
+"""数据导出页：远程文件浏览、批量导出、通讯录/短信/通话记录导出、自动备份（一插即救）。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from core.adb import AdbError
+from core.backup import BACKUP_CLASSES, AutoBackup, summarize
 from core.files import FileEntry, FileManager, QUICK_DIRS
 from ui.widgets import COLOR, ProgressPanel, run_async, Tooltip
 
@@ -22,10 +23,14 @@ class FilesPanel(ttk.Frame):
         self.current = "/sdcard"
         self.entries: list[FileEntry] = []
         self._stop = False
+        self._auto_running = False
 
         self._build_top()
         self._build_tree()
         self._build_bottom()
+        self._build_auto_backup()
+        self.progress = ProgressPanel(self)
+        self.progress.pack(fill="x", padx=10, pady=(0, 6))
 
     # ------------------------------------------------------------------ #
 
@@ -112,8 +117,108 @@ class FilesPanel(ttk.Frame):
         ttk.Button(box, text="导出短信", command=self.export_sms).pack(side="left", padx=4)
         ttk.Button(box, text="导出通话记录", command=self.export_calls).pack(side="left")
 
-        self.progress = ProgressPanel(self)
-        self.progress.pack(fill="x", padx=10, pady=(0, 6))
+    # ------------------------------------------------------------------ #
+    # 自动备份（一插即救）
+    # ------------------------------------------------------------------ #
+
+    def _build_auto_backup(self) -> None:
+        box = ttk.LabelFrame(self, text="  自动备份 · 一插即救（手机一连上就备份勾选的内容）  ", padding=6)
+        box.pack(fill="x", padx=8, pady=(0, 6))
+
+        top = ttk.Frame(box)
+        top.pack(fill="x")
+        saved_items = self.app.cfg.get("auto_backup_items") or []
+        self.auto_vars: dict[str, tk.BooleanVar] = {}
+        for i, (key, spec) in enumerate(BACKUP_CLASSES.items()):
+            var = tk.BooleanVar(value=(key in saved_items) if saved_items else
+                                key in ("photos", "screenshots", "sms", "contacts", "calllog"))
+            self.auto_vars[key] = var
+            ttk.Checkbutton(top, text=spec["label"], variable=var,
+                            command=self._save_auto_cfg).pack(side="left", padx=(0, 10) if i % 5 else (0, 10))
+            if i % 5 == 4:
+                ttk.Frame(top).pack(fill="x")
+
+        bar = ttk.Frame(box)
+        bar.pack(fill="x", pady=(6, 0))
+        self.auto_enabled = tk.BooleanVar(value=bool(self.app.cfg.get("auto_backup_enabled", False)))
+        ttk.Checkbutton(bar, text="启用：设备上线自动触发", variable=self.auto_enabled,
+                        command=self._save_auto_cfg).pack(side="left")
+        ttk.Label(bar, text="冷却(分)").pack(side="left", padx=(12, 2))
+        self.auto_cd = tk.StringVar(value=str(self.app.cfg.get("auto_backup_cooldown", 30)))
+        ttk.Spinbox(bar, from_=5, to=720, width=5, textvariable=self.auto_cd,
+                    command=self._save_auto_cfg).pack(side="left")
+        ttk.Label(bar, text="保存到").pack(side="left", padx=(12, 2))
+        default_dir = self.app.cfg.get("auto_backup_dir") or \
+            os.path.join(self.app.cfg.get("export_dir"), "AutoBackup")
+        self.auto_dir_var = tk.StringVar(value=default_dir)
+        ttk.Entry(bar, textvariable=self.auto_dir_var, width=34).pack(side="left")
+        ttk.Button(bar, text="浏览", width=6,
+                   command=lambda: _pick(self.auto_dir_var)).pack(side="left", padx=4)
+        self.btn_auto_now = ttk.Button(bar, text="立即备份一次", style="Accent.TButton",
+                                       command=self.run_auto_backup)
+        self.btn_auto_now.pack(side="left")
+        ttk.Label(box, text="说明：照片/文档类走增量备份（已备份且未变动的自动跳过）；"
+                            "短信/通讯录/通话每次导出带时间戳的新 CSV；微信数据需 root。",
+                  style="Muted.TLabel", wraplength=980).pack(anchor="w", pady=(4, 0))
+
+    def _save_auto_cfg(self) -> None:
+        self.app.cfg.set("auto_backup_enabled", self.auto_enabled.get())
+        self.app.cfg.set("auto_backup_items", [k for k, v in self.auto_vars.items() if v.get()])
+        self.app.cfg.set("auto_backup_dir", self.auto_dir_var.get().strip())
+        try:
+            self.app.cfg.set("auto_backup_cooldown", int(float(self.auto_cd.get())))
+        except ValueError:
+            pass
+
+    def _auto_selected(self) -> list[str]:
+        return [k for k, v in self.auto_vars.items() if v.get()]
+
+    def run_auto_backup(self, triggered: bool = False) -> None:
+        """执行一次自动备份。triggered=True 表示由设备上线触发。"""
+        if self._auto_running:
+            return
+        dev = self.app.device
+        if dev is None or not dev.online:
+            if triggered:
+                return
+            self.app.log("请先连接设备。", "warn")
+            return
+        items = self._auto_selected()
+        if not items:
+            if not triggered:
+                messagebox.showinfo("提示", "请先勾选要备份的内容。")
+            return
+        dest = self.auto_dir_var.get().strip() or os.path.join(
+            self.app.cfg.get("export_dir"), "AutoBackup")
+        self._save_auto_cfg()
+        from core.root import RootManager
+        root = RootManager(self.app.adb, dev.serial) if dev.rooted else None
+        ab = AutoBackup(self.app.adb, dev.serial, root=root)
+        self._auto_running = True
+        self.btn_auto_now.configure(state="disabled")
+        self.progress.reset("自动备份准备中…")
+
+        def work():
+            return ab.run(items, dest,
+                          on_progress=lambda t: self.app.after_ui(
+                              lambda: self.progress.set(50, t)))
+
+        def done(result):
+            self._auto_running = False
+            self.btn_auto_now.configure(state="normal")
+            self.progress.set(100, "自动备份完成")
+            msg = summarize(result)
+            self.app.log(f"自动备份（{dev.display_name}）：{msg} ｜ 目录：{dest}",
+                         "ok" if not result["failed"] else "warn")
+            if not triggered:
+                messagebox.showinfo("自动备份完成", msg + f"\n目录：{dest}")
+
+        def fail(exc):
+            self._auto_running = False
+            self.btn_auto_now.configure(state="normal")
+            self.app.log(f"✗ 自动备份失败：{exc}", "error")
+
+        run_async(self.app, work, on_done=done, on_error=fail, busy_text="自动备份中…")
 
     # ------------------------------------------------------------------ #
 

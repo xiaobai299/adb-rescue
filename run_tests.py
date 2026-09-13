@@ -30,6 +30,7 @@ SMOKE = os.path.join(HERE, ".smoke")
 SUITES = [
     ("核心层冒烟测试", "test_core.py"),
     ("Root 层冒烟测试", "test_root.py"),
+    ("自动备份与剪贴板测试", "test_backup.py"),
     ("界面端到端测试", "test_ui.py"),
     ("风险确认弹窗测试", "test_dialog.py"),
 ]

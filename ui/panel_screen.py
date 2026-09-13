@@ -440,7 +440,7 @@ class ScreenPanel(ttk.Frame):
         ttk.Button(box, text="发送到手机", style="Accent.TButton",
                    command=self._send_text).pack(side="left")
         ttk.Button(box, text="清空输入框", command=self._clear_field).pack(side="left", padx=6)
-        ttk.Button(box, text="复制到剪贴板", command=self._clipboard).pack(side="left")
+        ttk.Button(box, text="文本 → 手机剪贴板", command=self._clipboard).pack(side="left")
 
         self.chan_var = tk.StringVar(value="")
         ttk.Label(box, textvariable=self.chan_var, style="Muted.TLabel").pack(side="left", padx=10)
@@ -450,8 +450,67 @@ class ScreenPanel(ttk.Frame):
         Tooltip(entry, "英文/数字可直接发送；中文需要手机已安装并启用 ADBKeyboard 输入法。"
                        "未安装时工具会给出明确提示，不会静默失败。")
 
+        # 编辑键 + 剪贴板双向同步
+        bar2 = ttk.Frame(box)
+        bar2.pack(fill="x", pady=(6, 0))
+        ttk.Label(bar2, text="编辑键").pack(side="left")
+        for _name in ("复制", "粘贴", "剪切", "全选", "撤销", "重做"):
+            ttk.Button(bar2, text=_name, width=6,
+                       command=lambda n=_name: self._edit_key(n)).pack(side="left", padx=2)
+        ttk.Separator(bar2, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Button(bar2, text="手机剪贴板 → 电脑", command=self._read_clip).pack(side="left")
+        ttk.Label(bar2, text="（点投屏画面后用 Ctrl+C/V/X/A/Z/Y 快捷发送对应编辑键）",
+                  style="Muted.TLabel").pack(side="left", padx=8)
+        Tooltip(bar2, "编辑键发往手机当前焦点控件（Android 12+ 普遍支持）；\n"
+                      "『手机剪贴板→电脑』尽力读取（部分 ROM 因前台权限限制会失败，\n"
+                      "失败时改用『文本→手机剪贴板』+长按粘贴，或装 Clipper 应用）。")
+
         self.bind_all("<F11>", lambda _e: self.toggle_fullscreen())
         self.bind_all("<Escape>", lambda _e: self._exit_fullscreen())
+
+    # ---------------- 编辑键与剪贴板 ---------------- #
+
+    def _edit_key(self, name: str) -> None:
+        try:
+            ctl = self._require_input()
+            q = self.app.input_q
+            if q is None:
+                raise AdbError("输入通道未就绪", "请重新选择设备。")
+            if name == "全选":
+                q.submit(ctl.select_all)
+            else:
+                q.submit(ctl.key_by_name, name)
+            self.hint_var.set(f"已发送：{name}")
+        except AdbError as exc:
+            self.app.log(f"✗ {name} 失败：{exc.message}", "error")
+            if exc.hint:
+                self.app.log(f"  {exc.hint}", "warn")
+
+    def _read_clip(self) -> None:
+        try:
+            ctl = self._require_input()
+        except AdbError as exc:
+            self.app.log(f"✗ {exc.message}", "error")
+            return
+
+        def work():
+            return ctl.clipboard_get()
+
+        def done(result):
+            ok, text, channel = result
+            if ok:
+                try:
+                    self.app.clipboard_clear()
+                    self.app.clipboard_append(text)
+                    self.text_var.set(text[:200])
+                except Exception:  # noqa: BLE001 - 个别环境无法写系统剪贴板
+                    pass
+                show = text if len(text) <= 60 else text[:60] + "…"
+                self.app.log(f"✓ 手机剪贴板已同步到电脑（通道：{channel}）：{show}", "ok")
+            else:
+                self.app.log(f"✗ 读取手机剪贴板失败：{channel}", "warn")
+
+        run_async(self.app, work, on_done=done, busy_text="读取手机剪贴板…")
 
     # ------------------------------------------------------------------ #
     # 投屏引擎
@@ -775,22 +834,39 @@ class ScreenPanel(ttk.Frame):
         def work():
             ok = self._require_input().clipboard_set(text)
             if not ok:
-                raise AdbError("写入剪贴板失败",
-                               "该功能依赖 Clipper 等支持广播写入剪贴板的应用。"
-                               "替代方案：发送文本后，在投屏中长按输入框选择『粘贴』。")
+                raise AdbError("写入手机剪贴板失败",
+                               "已尝试 Clipper 广播与 cmd clipboard 通道均不可用。"
+                               "替代方案：① 用『发送到手机』直接输入文本；"
+                               "② 安装 Clipper 应用（免 root，一次即可）后再试。")
             return True
 
         run_async(self.app, work,
-                  on_done=lambda _v: self.app.log("已尝试写入手机剪贴板", "ok"),
+                  on_done=lambda _v: self.app.log("已写入手机剪贴板（在手机输入框长按即可粘贴）", "ok"),
                   busy_text="写入剪贴板…")
 
     def _on_key_press(self, event):
-        if not self.passthrough.get() or self.app.input is None:
+        if self.app.input is None:
             return
         q = self.app.input_q
         if q is None:
             return
         ctl = self.app.input
+        # Ctrl 组合：作为编辑快捷键直通手机（无论键盘直通是否开启）
+        if event.state & 0x0004 and event.char:
+            m = {"c": ctl.copy, "v": ctl.paste, "x": ctl.cut,
+                 "a": ctl.select_all, "z": ctl.undo, "y": ctl.redo}.get(event.char.lower())
+            if m is not None:
+                q.submit(m)
+                self.hint_var.set(f"快捷键 Ctrl+{event.char.upper()} → 已发送编辑键")
+                return
+        if event.keysym in ("Home", "End", "Page_Up", "Page_Down"):
+            name = {"Home": "光标居首", "End": "光标居尾",
+                    "Page_Up": "上翻页", "Page_Down": "下翻页"}[event.keysym]
+            q.submit(ctl.key_by_name, name)
+            self.hint_var.set(f"已发送：{name}")
+            return
+        if not self.passthrough.get():
+            return
         if len(event.char) and event.char.isprintable():
             q.submit(ctl.input_text_ascii, event.char)
         elif event.keysym == "Return":

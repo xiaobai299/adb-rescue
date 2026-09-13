@@ -52,9 +52,33 @@ KEY_EVENTS: dict[str, int] = {
     "上一首": 88,
     "下一首": 87,
     "长按电源菜单": 276,  # KEYCODE_POWER + long press，部分 ROM 有效
+    # 编辑键（Android 12+ 可由 shell 注入；旧系统部分 ROM 忽略）
+    "复制": 278,
+    "粘贴": 279,
+    "剪切": 277,
+    "撤销": 271,
+    "重做": 281,
+    "光标居首": 122,
+    "光标居尾": 123,
+    "上翻页": 92,
+    "下翻页": 93,
 }
 
 ASCII_ONLY = re.compile(r"^[\x20-\x7E]*$")
+
+
+def _extract_clip_text(output: str) -> str:
+    """从剪贴板读取结果中尽力提取文本（支持 Base64 / data="..." 两种回包）。"""
+    out = (output or "").strip()
+    if not out:
+        return ""
+    m = re.search(r'data="([^"]+)"', out) or re.search(r'base64=([A-Za-z0-9+/=]+)', out)
+    if m:
+        out = m.group(1)
+    try:
+        return base64.b64decode(out, validate=True).decode("utf-8")
+    except Exception:  # noqa: BLE001 - 不是 Base64 就当纯文本用
+        return out
 
 
 class InputController:
@@ -180,17 +204,82 @@ class InputController:
         return "com.android.adbkeyboard" in res.stdout
 
     def clipboard_set(self, text: str) -> bool:
-        """尝试通过 Clipper 广播写入剪贴板（需设备已安装 Clipper）。"""
+        """把文本写入手机剪贴板，依次尝试三条通道（全部失败返回 False）：
+        1) Clipper 广播（需安装 Clipper 应用，最可靠）
+        2) Android 12+ 的 cmd clipboard set-primary-clip（部分 ROM 支持）
+        3) root 下重试 cmd clipboard"""
         res = self.adb.shell(
             self.serial,
             f"am broadcast -a clipper.set -e text {shell_quote(text)}",
             timeout=10,
         )
-        return "Broadcast completed" in res.output or res.ok
+        if "Broadcast completed" in res.output and "Error" not in res.output:
+            return True
+        # cmd clipboard 写入（Android 12+，部分 ROM/厂商禁用）
+        res2 = self.adb.shell(
+            self.serial,
+            f"cmd clipboard set-primary-clip --user 0 {shell_quote(text)}",
+            timeout=10)
+        if res2.ok and "exception" not in (res2.output or "").lower() \
+                and "denied" not in (res2.output or "").lower():
+            return True
+        res3 = self.adb.shell(
+            self.serial,
+            f"su -c {shell_quote('cmd clipboard set-primary-clip --user 0 ' + text)}",
+            timeout=10)
+        return res3.ok and "exception" not in (res3.output or "").lower() \
+            and "denied" not in (res3.output or "").lower() and "not found" not in (res3.output or "").lower()
+
+    def clipboard_get(self) -> tuple[bool, str, str]:
+        """读取手机剪贴板（尽力而为）。返回 (成功?, 文本, 通道/原因)。
+
+        通道顺序：cmd clipboard get-primary-clip → root 重试 →
+        ADBKeyboard 的 ADB_GET_TEXT 广播（结果里带 Base64）。
+        Android 对剪贴板读取有前台/权限限制，部分系统全部失败——此时
+        界面会提示改用『发送文本』通道，不会静默失败。
+        """
+        for label, cmd in (
+            ("cmd clipboard", "cmd clipboard get-primary-clip --user 0"),
+            ("root cmd clipboard",
+             "su -c 'cmd clipboard get-primary-clip --user 0'"),
+        ):
+            res = self.adb.shell(self.serial, cmd, timeout=10)
+            if res.ok:
+                text = _extract_clip_text(res.output)
+                if text and "exception" not in text.lower() and "denied" not in text.lower():
+                    return True, text, label
+        if self.adbkeyboard_available():
+            res = self.adb.shell(self.serial, "am broadcast -a ADB_GET_TEXT", timeout=10)
+            text = _extract_clip_text(res.output)
+            if text:
+                return True, text, "ADBKeyboard"
+        return False, "", "系统限制：剪贴板读取需要前台应用权限（部分 ROM 禁用）。" \
+                           "可改用『发送到手机』直接输入文本。"
 
     def paste(self) -> None:
         """模拟 Ctrl+V 粘贴（部分输入框有效）。"""
         self._shell("input keyevent 279")  # KEYCODE_PASTE
+
+    # ---------------- 编辑键（复制/粘贴/剪切/全选/撤销/重做） ---------------- #
+
+    def copy(self) -> None:
+        self._shell("input keyevent 278")  # KEYCODE_COPY
+
+    def cut(self) -> None:
+        self._shell("input keyevent 277")  # KEYCODE_CUT
+
+    def undo(self) -> None:
+        self._shell("input keyevent 271")  # KEYCODE_UNDO
+
+    def redo(self) -> None:
+        self._shell("input keyevent 281")  # KEYCODE_REDO
+
+    def select_all(self) -> bool:
+        """Ctrl+A 全选：Android 11+ 用 keycombination，失败返回 False。"""
+        res = self.adb.shell(self.serial, "input keycombination 29 4096", timeout=10)
+        if not res.ok or "error" in (res.output or "").lower():
+            return False
+        return True
 
     # ---------------- 按键 ---------------- #
 

@@ -154,6 +154,11 @@ SHELL = {
         "Row: 1 address=13800000000, date=1755003600000, body=晚上一起吃饭, type=2, read=0\n"),
     "content query --uri content://call_log/calls --projection number:date:duration:type:name 2>&1": (
         "Row: 0 number=10010, date=1755000000000, duration=65, type=1, name=null\n"),
+    # 剪贴板通道（测试用）：Clipper 写入 / cmd clipboard 读取（Base64 回包）/ ADBKeyboard
+    "am broadcast -a clipper.set -e text 'abc'": "Broadcast completed: result=0\n",
+    "cmd clipboard get-primary-clip --user 0": "YWJjMTIz\n",  # base64("abc123")
+    "am broadcast -a ADB_GET_TEXT": 'Broadcast completed: result=0, data="YWJj5rWL6K+V"\n',
+    "pm list packages com.android.adbkeyboard": "package:com.android.adbkeyboard\n",
 }
 
 # --------------------------------------------------------------------------- #
